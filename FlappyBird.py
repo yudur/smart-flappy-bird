@@ -1,6 +1,12 @@
 import pygame
 import os
 import random
+import neat
+
+#if the variable "ai_playing" is set to true, 
+# it will be the AI that will play, if it is set to false, the player that will play
+ai_playing = True
+generation = 0
 
 SCREEN_WIDTH = 500
 SCREEN_HEIGHT = 800
@@ -167,11 +173,31 @@ def draw_screen(screen, birds, pipes, floor, spots):
 
     text = SOURCE_POINTS.render(f'Pontuação: {spots}', 1, (255, 255, 255))
     screen.blit(text, (SCREEN_WIDTH - 10 - text.get_width(), 10))
+
+    if ai_playing:
+        text = SOURCE_POINTS.render(f'Geração: {generation}', 1, (255, 255, 255))
+        screen.blit(text, (10, 10))
+
     floor.to_draw(screen)
     pygame.display.update()
 
-def main():
-    birds = [Bird(230, 350)]
+def main(genomes, config):
+    global generation
+    generation += 1
+
+    if ai_playing:
+        nets = []
+        list_genomes = []
+        birds = []
+
+        for _, genome, in genomes:
+            network = neat.nn.FeedForwardNetwork.create(genome, config)
+            nets.append(network)
+            genome.fitness = 0
+            list_genomes.append(genome)
+            birds.append(Bird(230, 350))
+    else:
+        birds = [Bird(230, 350)]
     floor = Floor(730)
     pipes = [Pipe(700)]
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -187,22 +213,44 @@ def main():
                 running = False
                 pygame.quit()
                 quit()
+            if not ai_playing:
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_SPACE:
+                        for bird in birds:
+                            bird.jump()
 
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_SPACE:
-                    for bird in birds:
-                        bird.jump()
-        
-        for bird in birds:
+        barrel_index = 0
+        if len(birds) > 0:
+            if len(pipes) > 1 and birds[0].x > (pipes[0].x + pipes[0].TOP_BARREL.get_width()):
+                barrel_index = 1
+        else:
+            running = False
+            break
+
+        for i, bird in enumerate(birds):
             bird.to_move()
-        floor.to_move()
+            if ai_playing:
+                list_genomes[i].fitness += 0.1
+                output = nets[i].activate((
+                    bird.y,
+                    abs(bird.y - pipes[barrel_index].heigth),
+                    abs(bird.y - pipes[barrel_index].base_position)
+                ))
+                # -1 and 1 -> if the output is greater than 0.5 then the bird jumps
+                if output[0] > 0.5:
+                    bird.jump()
+        floor.to_move() 
 
         add_pipe = False
         remove_pipes = []
         for pipe in pipes:
             for i, bird in enumerate(birds):
                 if pipe.collide(bird):
-                    bird.pop(i)
+                    birds.pop(i)
+                    if ai_playing:
+                        list_genomes[i].fitness -= 1
+                        list_genomes.pop(i)
+                        nets.pop(i)
                 if not pipe.passed_on and bird.x > pipe.x:
                     pipe.passed_on = True
                     add_pipe = True
@@ -213,15 +261,42 @@ def main():
         if add_pipe:
             spots += 1
             pipes.append(Pipe(600))
+            if ai_playing:
+                for genome in list_genomes:
+                    genome.fitness += 5
         for pipe in remove_pipes:
             pipes.remove(pipe)
 
         for i, bird in enumerate(birds):
             if(bird.y + bird.image.get_height()) > floor.y or bird.y < 0:
                 birds.pop(i)
+                if ai_playing:
+                    list_genomes.pop(i)
+                    nets.pop(i)
 
         draw_screen(screen, birds, pipes, floor, spots)
 
+def run(configuration_path):
+    config = neat.config.Config(
+        neat.DefaultGenome,
+        neat.DefaultReproduction,
+        neat.DefaultSpeciesSet,
+        neat.DefaultStagnation,
+        configuration_path
+    )
+
+    population = neat.Population(config)
+    population.add_reporter(neat.StdOutReporter(True))
+    population.add_reporter(neat.StatisticsReporter())
+
+    if ai_playing:
+        # The second argument defines how many generations will be created 
+        # until the game stops, if the argument is empty the game will run infinitely
+        population.run(main, 50)
+    else:
+        main(None, None)
 
 if __name__ == "__main__":
-    main()
+    path = os.path.dirname(__file__)
+    configuration_path = os.path.join(path, 'config.txt')
+    run(configuration_path)
